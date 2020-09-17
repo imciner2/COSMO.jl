@@ -95,10 +95,11 @@ function optimize!(ws::COSMO.Workspace{T}) where {T <: AbstractFloat}
 	settings.verbose && print_header(ws)
 	time_limit_start = time()
 
-	# allocate additional work variables used in ADMM loop
 	m, n = ws.p.model_size
-	COSMO.allocate_loop_variables!(ws, m, n)
+	iter_history = IterateHistory(m, n, settings.acc_mem)
+	update_iterate_history!(iter_history, ws.vars.x, ws.vars.s, -ws.vars.μ, ws.vars.w, r_prim, r_dual, zeros(ws.settings.acc_mem), NaN)
 
+	COSMO.allocate_loop_variables!(ws, m, n)
 
 	@. w[1:n] = ws.vars.x[1:n]
 	@. w[n+1:end] = ws.vars.s.data
@@ -109,6 +110,11 @@ function optimize!(ws::COSMO.Workspace{T}) where {T <: AbstractFloat}
 
 	for iter = 1:settings.max_iter
 		num_iter += 1
+
+		if num_iter > 1
+			update_history!(ws.accelerator, ws.vars.w, ws.vars.w_prev)
+			accelerate!(ws.vars.w, ws.vars.w_prev, ws.accelerator, num_iter)
+		end
 
 		# For infeasibility detection: Record the previous step just in time
 		if mod(iter, settings.check_infeasibility) == settings.check_infeasibility - 1
@@ -226,6 +232,10 @@ function optimize!(ws::COSMO.Workspace{T}) where {T <: AbstractFloat}
 	# create result object
 	res_info = ResultInfo(r_prim, r_dual, ws.rho_updates)
 	free_memory!(ws)
+
+	if typeof(ws.accelerator) <: AndersonAccelerator{Float64}
+		iter_history.aa_fail_data = ws.accelerator.fail_counter
+	end
 
 	return Result{T}(ws.vars.x, y, ws.vars.s.data, cost, num_iter, status, res_info, ws.times);
 
